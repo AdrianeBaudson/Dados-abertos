@@ -1,0 +1,317 @@
+---
+title: "Untitled"
+author: "Adriane Baudson do Nascimento"
+date: "2025-05-15"
+output: html_document
+---
+
+
+#Atividade 4
+O objetivo da atividade 4 é traduzir a rotina criada em R da atividade anterior (Atividade 3) para uma rotina comentada em RMarkdown, indicando detalhes a respeito do processo de aquisição e limpeza dos dados. A seguir, iremos então, traduzir a atividade 3.
+
+# Atividade 3
+## 3.1 Acesso a bancos de dados abertos
+
+Nesta atividade iremos trabalhar acessando repositórios de dados de ocorrência de espécies. Dentre os diversos repositórios de dados abertos, dois são muitos utilizados para dados biológicos, o GBIF (Global Biodiversity Information Facility), considerado o maior repositório de ocorrências da biodiversidade da atualidade, e o OBIS (Sistema de Informação sobre Biodiversidade Oceânica), um respositório dedicado às espécies marinhas.
+
+Primeiro, vamos requerer os pacotes que vamos utilizar nesta atividade. Você pode fazer isso agora ou requerer um de cada vez à medida em que for necessário ao longo dos códigos, deixo aqui essas duas opções. No decorrer dos códigos apresentados, terá uma informação especificando o pacote e a função que será utilizada para determinado objetivo. Caso você não tenha algum desses pacotes instalados no seu RStudio, basta instalar utilizando a função install.packages(). Por exemplo, install.packages("tidyverse").
+
+```{r}
+require(tidyverse)
+require(rgbif)
+require(bdc)
+require(CoordinateCleaner)
+require(dplyr)
+require(ggplot2)
+require(ggmap)
+require(maps)
+require(mapdata)
+```
+
+### 3.1.1 Espécie-alvo
+
+A espécie utilizada como exemplo será o caranguejo maria-farinha *Ocypode quadrata*, um crustáceo bentônico habitante da região entremarés e supralitoral das praias arenosas.
+
+![Fonte: Adriane Baudson do Nascimento](C:\Users\dribn\OneDrive\Documentos\Estatística\Atividade 4\Dados-abertos\ocypode.jpeg)
+
+### 3.1.2 Iniciando as buscas e baixando as ocorrências da espécie utilizando o GBIF
+
+Inicialmente, iremos baixar as ocorrências para essa espécie utilizando a função occ_data e fornecendo o seu nome científico. Em seguida o comando dim(ocypode_gbif) vai nos dar as dimensões deste objeto, checabdo a quantidade de linhas e colunas.
+
+```{r}
+#Pacotes utilizados para manipular os dados
+require(tidyverse)
+require(rgbif)
+```
+
+```{r}
+#Criando um objeto e baixando as ocorrências da espécie utilizando a função occ_data.
+ocypode_gbif <- occ_data(scientificName = "Ocypode quadrata", 
+                      hasCoordinate = TRUE,
+                      hasGeospatialIssue=FALSE)
+
+# dimensoes
+dim(ocypode_gbif)
+```
+
+```{r}
+#Checando os campos
+ocypode_gbif$data %>% names
+```
+
+Este comando nos mostrou as ocorrências em cada linha e as variáveis, que podem ser utilizadas para filtrar as ocorrências de acordo com o objetivo da pesquisa.
+
+## 3.2 Problemas reportados
+
+A função gbif_issues() nos reporta, através da coluna issues, problemas identificados pelo validador automático do repositório. Algumas ocorrências podem apresentar mais de um problema, por isso, é necessário aplicar um tratamento dos issues - para individualiza-los e conferi-los com mais detalhes. A função strsplit serve para indidualizar os issues, podendo realizar sua conferência.
+
+```{r}
+gbif_issues()
+
+#Checando problemas reportados
+issues_gbif <- ocypode_gbif$data$issues %>% 
+  unique() %>% 
+  strsplit(., "[,]") %>% 
+  unlist()
+
+gbif_issues() %>% 
+  data.frame() %>% 
+  filter(code %in% issues_gbif)
+```
+
+A próxima função irá selecionar e validar algumas variáveis do banco de dados para análises futuras, como por exemplo, coordenadas geográficas, continentes, países etc.
+
+```{r}
+require(dplyr)
+ocypode_gbif1 <- ocypode_gbif$data %>%
+   dplyr::select(scientificName, acceptedScientificName, decimalLatitude, decimalLongitude, issues, basisOfRecord, occurrenceStatus, continent, country,rightsHolder, datasetName, recordedBy)
+
+ocypode_gbif1 <- ocypode_gbif1 %>% 
+  distinct() 
+```
+
+A função distinct do pacote dplyr, quantas ocorrências são únicas. Após, o número de ocorrências foi reduzido após a exclusão de colunas com dados que não são o foco da pesquisa.
+
+Vamos agora, utilizando as funções unique e lapply, checar os níveis dos fatores identificando todos os valores únicos presentes nos dados.
+
+```{r}
+# checando os niveis dos fatores com as funções unique e lapply:
+lapply(ocypode_gbif1, unique)
+```
+
+## 3.3 Problemas não reportados
+
+É necessário realizar uma checagem mais detalhada dos dados. Podemos inicar checando a validade das coordenadas, por exemplo. Iremos precisar das funções dos pacotes CoordinateCleaner e bcd nesta etapa. Após, checaremos as coordenadas próximas às capitais, este passo é de suma importância porque muitas coordenadas podem ser erroneamente associadas a capitais dos países.
+
+```{r}
+require(bdc)
+require(CoordinateCleaner)
+
+#Checando coordenadas válidas
+check_pf <- 
+  bdc::bdc_coordinates_outOfRange(
+    data = ocypode_gbif1,
+    lat = "decimalLatitude",
+    lon = "decimalLongitude")
+
+#Checando coordenadas válidas e próximas a capitais
+cl <- ocypode_gbif1 %>%
+  CoordinateCleaner::clean_coordinates(species = "acceptedScientificName",
+                                       lat = "decimalLatitude",
+                                       lon = "decimalLongitude",
+                                       tests = c("capitals", 
+                                                 "centroids","equal", 
+                                                 "gbif", "institutions", 
+                                                 "outliers", "seas", 
+                                                 "zeros"))
+```
+
+Uma ocorrência apareceu próxima à capitais. Como se trata de um animal semi-terrestre, habitante da região supralitoral das praias arenosas precisamos checar esse tipo de ocorrência. Para isso, analisamos pontos em terra (próximo a capitais) e pontos no mar.
+
+```{r}
+#Verificando coordenadas com flags
+
+# capitais (padrão é um raio de 10km)
+require(ggplot2)
+
+ggplot() +
+  borders("world", fill = "lightgray") +
+  geom_point(data = cl, aes(x = decimalLongitude, y = decimalLatitude, color = `.cap`)) +
+  coord_quickmap() +
+  theme_classic()
+
+# pontos no mar
+ggplot() +
+  borders("world", fill = "lightgray") +
+  geom_point(data = cl, aes(x = decimalLongitude, y = decimalLatitude, color = `.sea`)) +
+  coord_quickmap() +
+  theme_classic()
+```
+
+Os dados em terra podem ser excluidos através da verificação da distribuição das ocorrências em regiões oceanográficas inseridas nos dados (waterBody, por exemplo). Entretanto, O banco de dados disponibilizado no GBIF para esta espécie não apresenta esta variável, por isso, pularemos este passo.
+
+Vamos agora filtrar todas as ocorrências suspeitas do dataset. Caso haja a suspeita de ocorrências em outras costas litorâneas, estas coordenadas serão excluídas.
+
+```{r}
+# Filtrando todas as ocorrências suspeitas do dataset
+ocypode_gbif_noDiveboard <- ocypode_gbif1 %>% 
+  filter(!datasetName %in% c("Diveboard - Scuba diving citizen science"))
+
+ocypode_gbif_noDiveboard %>% 
+  filter(decimalLatitude > 25) %>% 
+  arrange(-decimalLatitude) %>% 
+  data.frame()
+
+ocypode_gbif_ok <- ocypode_gbif_noDiveboard %>% 
+  filter(decimalLatitude < 31) 
+```
+
+Vamos agora checar os pontos e plotar um mapa de ocorrência da nossa espécie selecionada. Iremos precisar dos pacotes ggmap, maps e mapdata.
+
+```{r}
+require(ggmap)
+require(maps)
+require(mapdata)
+
+world <- map_data('world')
+
+ggplot() +
+  geom_polygon(data = world, aes(x = long, y = lat, group = group)) +
+  coord_fixed() +
+  theme_classic() +
+  geom_point(data = ocypode_gbif_ok, aes(x = decimalLongitude, y = decimalLatitude), color = "red") +
+  labs(x = "longitude", y = "latitude", title = expression(italic("Ocypode quadrata")))
+```
+
+Conseguimos visualizar no mapa a ocorrência da espécie-alvo. Finalizamos esta etapa por aqui.
+
+
+# OBIS
+
+Agora faremos os mesmos procedimentos utilizando o banco de dados disponilizado no OBIS (Sistema de Informação sobre Biodiversidade Oceânica), um respositório especial de espécies marinhas. Esperamos que os dados da espécie-alvo estejam disponpiveis em ambos os repositórios.
+
+Vamos utilizar o pacote robis e a função occurrence deste pacote para baixar as ocorrências da nossa espécie.
+
+```{r}
+#Baixando as ocorrências
+ocypode_obis <- robis::occurrence("Ocypode quadrata")
+```
+
+Como ambos os repositórios utilizam como base o sistema Darwin Core, as variáveis possuem o mesmo nome. Vamos selecionar as variáveis disponpiveis no banco de dados para nossas futuras análises. Aqui, os problemas reportados são indicados na coluna flags.
+
+```{r}
+#Checando os dados
+names(ocypode_obis)
+
+#Selecionando as variáveis 
+ocypode_obis1 <- ocypode_obis %>% 
+  dplyr::select(scientificName, decimalLatitude, decimalLongitude, bathymetry,
+                flags, waterBody, basisOfRecord, occurrenceStatus, rightsHolder, 
+                datasetName, recordedBy, depth, locality, habitat) %>% 
+  distinct()
+
+#Chacando os problemas reportados (flags)
+ocypode_obis1 %>% 
+  distinct(flags)
+```
+
+Checaremos agora a presença de NA's em nosso conjunto de dados. Ao rodar este código, conseguimos visualizar ocorrências disponíveis em corpos de água (variável waterBody) no Golfo do México, Mar do Caribe, Oceano Atlântico Norte, Atlântico Sul e Caribe. 
+
+```{r}
+#Checando os NA's em datasetName
+ocypode_obis1 %>% 
+  filter(!flags %in% c("NO_DEPTH,ON_LAND", "ON_LAND", "DEPTH_EXCEEDS_BATH,ON_LAND"),
+         is.na(datasetName)) %>% 
+  distinct(waterBody)
+```
+
+Como se trata de um repositório dedicado às espécies marinhas, utilizamos aqui a função flags para filtrar as ocorrências em terra. Diferente do respositório GBIF, no OBIS já se encontram disponíveis as variáveis waterBody e depth, logo, iremos utilizá-las. Seguindo, checaremos os níveis das variáveis.
+
+```{r}
+#Profundidade - depth
+ocypode_obis1 %>% 
+  filter(!flags %in% c("NO_DEPTH,ON_LAND", "ON_LAND", "DEPTH_EXCEEDS_BATH,ON_LAND"),
+         !is.na(datasetName),
+         !waterBody %in% c("Gulf of Mexico", "Mar Caribe", "North Atlantic Ocean", "South Atlantic", "Caribbean")) %>% 
+  ggplot(aes(x = depth, fill = waterBody)) +
+  geom_histogram() 
+
+#Checando os niveis das variáveis
+ocypode_obis1 %>% 
+  filter(!flags %in% c("NO_DEPTH,ON_LAND", "ON_LAND", "DEPTH_EXCEEDS_BATH,ON_LAND"),
+         !is.na(datasetName),
+         !waterBody %in% c("Gulf of Mexico", "Mar Caribe", "North Atlantic Ocean", "South Atlantic", "Caribbean")) %>% 
+  lapply(., unique)
+```
+
+```{r}
+#Aplicando filtros
+ocypode_obis_ok <- ocypode_obis1 %>% 
+  filter(!flags %in% c("NO_DEPTH,ON_LAND", "ON_LAND", "DEPTH_EXCEEDS_BATH,ON_LAND"),
+         !is.na(datasetName),
+         !waterBody %in% c("Gulf of Mexico", "Mar Caribe", "North Atlantic Ocean", "South Atlantic", "Caribbean"))
+
+#Plotando o mapa
+ggplot() +
+  geom_polygon(data = world, aes(x = long, y = lat, group = group)) +
+  coord_fixed() +
+  theme_classic() +
+  geom_point(data = ocypode_obis_ok, aes(x = decimalLongitude, y = decimalLatitude, color = waterBody)) +
+  labs(x = "longitude", y = "latitude", title = expression(italic("Ocypode quadrata")))
+
+ocypode_obis_final <- ocypode_obis_ok %>% 
+  filter(decimalLongitude > 0 | decimalLongitude > -100)
+```
+
+```{r}
+#Plotando o mapa novamente
+ggplot() +
+  geom_polygon(data = world, aes(x = long, y = lat, group = group)) +
+  coord_fixed() +
+  theme_classic() +
+  geom_point(data = ocypode_obis_ok, aes(x = decimalLongitude, y = decimalLatitude, color = waterBody)) +
+  labs(x = "longitude", y = "latitude", title = expression(italic("Ocypode quadrata")))
+```
+
+Tudo ok! Podemos ver que todas as ocorrências disponíveis no repositório OBIS se concentram no Mar do Caribe.
+Vamos agora unir todas as ocorrências que encontramos em ambos os repositórios, checando se existem duplicatas e plotando um mapa final de ocorrências.
+
+```{r}
+#Unindo os mapas das ocorrências da espécie gerados pelo GBIF e pelo OBIS.
+
+#Analisando as diferencas
+setdiff(names(ocypode_gbif_ok), names(ocypode_obis_ok))
+setdiff(names(ocypode_obis_final), names(ocypode_obis_final))
+
+
+all_data <- bind_rows(ocypode_gbif_ok %>% 
+                        mutate(repo = paste0("gbif", row.names(.))), 
+                      ocypode_obis_final %>% 
+                        mutate(repo = paste0("obis", row.names(.)))) %>%
+  column_to_rownames("repo") %>% 
+  dplyr::select(decimalLongitude, decimalLatitude, depth) %>% 
+  distinct() %>% 
+  rownames_to_column("occ") %>% 
+  separate(col = "occ", into = c("datasetName", "rn"), sep = 4) %>%
+  mutate(scientificName = "Ocypode quadrata") %>% 
+  dplyr::select(-rn)
+
+
+#Mapeando as ocorrências
+ggplot() +
+  geom_polygon(data = world, aes(x = long, y = lat, group = group)) +
+  coord_fixed() +
+  theme_classic() +
+  geom_point(data = all_data, aes(x = decimalLongitude, y = decimalLatitude, color = datasetName)) +
+  #theme(legend.title = element_blank()) +
+  labs(x = "longitude", y = "latitude", title = expression(italic("Ocypode quadrata")))
+```
+
+Podemos ver que o repositório do GBIF apresentou um número maior de ocorrências comparado ao OBIS. A espécie-alvo é considerada semi-terrestre, habitando entre a região entremarés e o supralitoral das praias arenosas. Como o OBIS é um repositório dedicado à espécies marinhas, a ocorrência que foi registrada no mapa está localizada no Mar do Caribe.
+
+Por último, vamos salvar nossos dados baixados e devidamente tratados.
+
+```{r}
+#Salvando os dados
+write.csv(all_data, "occ_GBIF-OBIS_par_hepa.csv", row.names = FALSE)
+```
